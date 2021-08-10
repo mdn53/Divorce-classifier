@@ -1,0 +1,236 @@
+---
+title: "divorce_project"
+author: "Minh Nguyen"
+date: "12/4/2019"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Preparing the data
+```{r data}
+library(readxl)
+data <- read_excel("divorce.xlsx")
+divorced <- ifelse(data$Class==0, "No", "Yes") # convert martial status from numeric to factor 
+data <- data.frame(data, divorced)
+set.seed(1) # Variable selection for reduced models will be based on the 1st seed.
+split <- sample(1:nrow(data), nrow(data)*0.8) # 80/20 train/test split
+train <- data[split,]
+test <- data[-split,]
+divorced.test <- divorced[-split]
+```
+
+## Logistic on seeds 1-50
+```{r logit}
+logit.lasso.errors <- c()
+logit.lasso.best.attr <- c()
+size.logit.model <- c()
+for (i in 1:50) {
+  set.seed(i)
+  split <- sample(1:nrow(data), nrow(data)*0.8)
+  train <- data[split,]
+  test <- data[-split,]
+  divorced.test <- divorced[-split]
+  
+  library(glmnet)
+  logit.lasso.model <- cv.glmnet(as.matrix(train[0:54]), as.matrix(train[55]), alpha=1, nfolds=5, family ='binomial')
+  pred.logit.lasso <- predict(logit.lasso.model, s = logit.lasso.model$lambda.min, newx =as.matrix(test[0:54]),family="binomial",type='response')
+  pred.logit.lasso <- ifelse(pred.logit.lasso<0.5,"No","Yes")
+  logit.lasso.errors[i] <- sum(pred.logit.lasso!=divorced.test)/length(divorced.test)
+  
+  attributes <- row.names(data.frame(coef(logit.lasso.model)[,1][coef(logit.lasso.model)[,1]!=0]))
+  logit.lasso.best.attr <- append(logit.lasso.best.attr, c(attributes)[2:length(attributes)])
+  size.logit.model[i] <- length(attributes)
+}
+
+boxplot(size.logit.model, main="Size of Lasso-reduced Logistic models")
+```
+
+## LDA on seeds 1-50
+```{r lda}
+lda.fwd.errors <- c()
+lda.bwd.errors <- c()
+
+lda.fwd.best.attr <- c()
+lda.bwd.best.attr <- c()
+
+size.fwd.lda.model <- c()
+size.bwd.lda.model <- c()
+
+for (i in 1:50) {
+  set.seed(i)
+  split <- sample(1:nrow(data), nrow(data)*0.8)
+  train <- data[split,]
+  test <- data[-split,]
+  divorced.test <- divorced[-split]
+  library(leaps)
+  regfit.fwd <- regsubsets(Class~.-divorced,data=train,method="forward", nvmax = 54) # fwd       selection yields the best model for each subset of predictors. Now we need to pick the optimal subset to use based on cross-validated test errors
+  regfit.bwd <- regsubsets(Class~.-divorced,data=train,method="backward", nvmax = 54) # same thing for bwd selection, we need to figured out best subset based on cross-validated test errors
+  library(MASS)
+  subset.fwd.errors <- c()
+  subset.bwd.errors <- c()
+  for (j in 1:54){
+    formula <- as.formula (paste("Class", paste(names(coef(regfit.fwd, id=j))[2:(j+1)], collapse=' + ' ), sep = "~"))
+    lda.fwd.model <- lda(formula, data=train)
+    lda.fwd.pred <- predict(lda.fwd.model,test)
+    subset.fwd.errors[j] <- sum(lda.fwd.pred$class!=test$Class)/length(divorced.test)
+    
+    formula <- as.formula (paste("Class", paste(names(coef(regfit.bwd, id=j))[2:(j+1)], collapse=' + ' ), sep = "~"))
+    lda.bwd.model <- lda(formula, data=train)
+    lda.bwd.pred <- predict(lda.bwd.model,test)
+    subset.bwd.errors[j] <- sum(lda.bwd.pred$class!=test$Class)/length(divorced.test)
+  }
+  best.subset.fwd <- which.min(subset.fwd.errors) 
+  best.subset.fwd <- names(coef(regfit.fwd, id=best.subset.fwd))[2:(best.subset.fwd+1)]
+  best.subset.bwd <- which.min(subset.bwd.errors) 
+  best.subset.bwd <- names(coef(regfit.bwd, id=best.subset.bwd))[2:(best.subset.bwd+1)]
+  
+  lda.fwd.best.attr <- append(lda.fwd.best.attr, c(best.subset.fwd))
+  lda.bwd.best.attr <- append(lda.bwd.best.attr, c(best.subset.bwd))
+  size.fwd.lda.model[i] <- length(best.subset.fwd)
+  size.bwd.lda.model[i] <- length(best.subset.bwd)
+    
+  formula.fwd <- as.formula (paste("Class", paste(best.subset.fwd, collapse=' + ' ), sep = "~"))
+  lda.fwd.model <- lda(formula.fwd, data=train)
+  lda.fwd.pred <- predict(lda.fwd.model,test)
+  lda.fwd.errors[i] <- sum(lda.fwd.pred$class!=test$Class)/length(divorced.test)
+  
+  formula.bwd <- as.formula (paste("Class", paste(best.subset.bwd, collapse=' + ' ), sep = "~"))
+  lda.bwd.model <- lda(formula.bwd, data=train)
+  lda.bwd.pred <- predict(lda.bwd.model,test)
+  lda.bwd.errors[i] <- sum(lda.bwd.pred$class!=test$Class)/length(divorced.test)
+}
+
+boxplot(size.fwd.lda.model, size.bwd.lda.model, main="Size of reduced LDA models")
+```
+
+## Tree-based on seeds 1-50
+```{r tree-based}
+tree.errors <- c()
+bag.errors <- c()
+rf.errors <- c()
+
+tree.best.attr <- c()
+bag.best.attr <- c()
+rf.best.attr <- c()
+
+size.tree.model <- c()
+
+for(i in 1:50){
+  set.seed(i)
+  split <- sample(1:nrow(data), nrow(data)*0.8)
+  train <- data[split,]
+  test <- data[-split,]
+  divorced.test <- divorced[-split]
+  
+  library(tree)
+  
+  tree.model <- tree(divorced~.-Class, data=train)
+  cv.tree.model <- cv.tree(tree.model)
+  prune.tree.model <- prune.tree(tree.model, best=cv.tree.model$size[which.min(cv.tree.model$dev)])
+  prune.tree.pred <- predict(prune.tree.model, test, type="class")
+  tree.errors[i] <- sum(prune.tree.pred!=divorced.test)/length(divorced.test)
+  tree.best.attr[i] <- summary(prune.tree.model)$used[1]
+  
+  size.tree.model[i] <- cv.tree.model$size[which.min(cv.tree.model$dev)]
+  
+  library(randomForest)
+  bag.model <- randomForest(divorced~.-Class, data=train, mtry=54, importance=TRUE)
+  bag.pred <- predict(bag.model, test, type="class")
+  bag.errors[i] <- sum(bag.pred!=divorced.test)/length(divorced.test)
+  bag.best.attr[i] <- which(importance(bag.model, type=2)==max(importance(bag.model, type=2)))
+  
+  rf.model <- randomForest(divorced~.-Class, data=train, mtry=7, importance=TRUE)
+  rf.pred <- predict(rf.model, test, type="class")
+  rf.errors[i] <- sum(rf.pred!=divorced.test)/length(divorced.test)
+  rf.best.attr[i] <- which(importance(rf.model, type=2)==max(importance(rf.model, type=2)))
+}
+```
+
+## KNN on seeds 1-50
+```{r knn}
+
+set.seed(1)
+k_to_try = 1:85
+err_k = rep(x = 0, times = length(k_to_try))
+for (i in 1:85) {
+  predicted = knn(train = train[1:54],
+  test = train[1:54],
+  cl = as.factor(train$Class),
+  k = i)
+  
+  err_k[i] = mean(divorced.test!=predicted)
+}
+
+plot(err_k, type = "b", col = "dodgerblue", cex = 1, pch = 20,
+xlab = "k, number of neighbors", ylab = "classification error",
+main = "(Test) Error Rate vs Neighbors")
+# add line for min error seen
+abline(h = min(err_k), col = "darkorange", lty = 3)
+# add line for minority prevalence in test set
+abline(h = mean(as.factor(train$Class) == "1"), col = "grey", lty = 2)
+
+knn.errors <- c()
+library(FNN)
+for(i in 1:50){
+  set.seed(i)
+  split <- sample(1:nrow(data), nrow(data)*0.8)
+  train <- data[split,]
+  test <- data[-split,]
+  divorced.test <- as.factor(test$Class)
+  
+  err_k <- c()
+  for (j in 1:85) {
+    predicted = knn(train = train[1:54], test = train[1:54], cl=as.factor(train$Class), k=j)
+    err_k[j] = mean(divorced.test!=predicted)
+  }
+  knn.errors[i] = min(err_k)
+}
+```
+
+## Displaying results
+
+- Printing out means and variances of test errors across 50 seeds for each model
+``` {r results1}
+error.means <- data.frame(c(mean(logit.lasso.errors),mean(lda.fwd.errors),mean(lda.bwd.errors),mean(tree.errors),mean(bag.errors),mean(rf.errors),mean(knn.errors)))
+rownames(error.means) <- c("logit", "lf", "lb", "tree","bag","rf","knn")
+colnames(error.means) <- c("mean errors")
+print(error.means)
+print(min(error.means))
+
+error.var <- data.frame(c(var(logit.lasso.errors),var(lda.fwd.errors),var(lda.bwd.errors),var(tree.errors),var(bag.errors),var(rf.errors),var(knn.errors)))
+rownames(error.var) <- c("logit", "lf", "lb", "tree","bag","rf","knn")
+colnames(error.var) <- c("mean error variances")
+
+print(error.var)
+print(min(error.var))
+```
+- Printing out plots
+```{r results2}
+barplot(c(mean(logit.lasso.errors), mean(lda.fwd.errors), mean(lda.bwd.errors), mean(tree.errors), mean(bag.errors), mean(rf.errors), mean(knn.errors)), main="Test errors", names.arg=c("logit", "lf", "lb", "tree","bag","rf","knn"))
+
+barplot(c(var(logit.lasso.errors), var(lda.fwd.errors), var(lda.bwd.errors), var(tree.errors), var(bag.errors), var(rf.errors), var(knn.errors)), main="Test error variances", names.arg=c("logit", "lf", "lb", "tree","bag","rf","knn"))
+
+par(mfrow = c(1,2))
+boxplot(logit.lasso.errors, lda.fwd.errors, lda.bwd.errors, tree.errors,bag.errors,rf.errors, knn.errors, names=c("logit", "lf", "lb", "tree","bag","rf","knn"),main="Test Errors")
+```
+- Plots with KNN results removed
+```{r results3}
+barplot(c(mean(logit.lasso.errors), mean(lda.fwd.errors), mean(lda.bwd.errors), mean(tree.errors), mean(bag.errors), mean(rf.errors)), main="Test errors", names.arg=c("logit", "lf", "lb", "tree","bag","rf"))
+
+barplot(c(var(logit.lasso.errors), var(lda.fwd.errors), var(lda.bwd.errors), var(tree.errors), var(bag.errors), var(rf.errors)), main="Test error variances", names.arg=c("logit", "lf", "lb", "tree","bag","rf"))
+
+par(mfrow = c(1,2))
+boxplot(logit.lasso.errors, lda.fwd.errors, lda.bwd.errors, tree.errors,bag.errors,rf.errors, names=c("logit", "lf", "lb", "tree","bag","rf"),main="Test Errors")
+```
+- Analyzing most important predictors
+```{r results4}
+sort(table(logit.lasso.best.attr),decreasing=TRUE)[1:5]
+sort(table(lda.fwd.best.attr),decreasing=TRUE)[1:5]
+sort(table(lda.bwd.best.attr),decreasing=TRUE)[1:5]
+sort(table(tree.best.attr),decreasing=TRUE)[1:5]
+sort(table(bag.best.attr),decreasing=TRUE)[1:5]
+sort(table(rf.best.attr),decreasing=TRUE)[1:5]
+```
