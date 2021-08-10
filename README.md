@@ -1,4 +1,4 @@
-## Divorce-classifier
+## Divorce classifier
 
 R-based divorce classifier analyzing different machine learning tools.
 
